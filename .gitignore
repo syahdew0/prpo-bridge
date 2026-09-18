@@ -1,0 +1,14 @@
+# Rahasia — repo ini publik.
+.env
+*.env
+!config.example.env
+
+# Canvas hasil generate memuat BRIDGE_TOKEN di dalam URL node API Call.
+# Bangun ulang dengan `python3 build_flow.py`, jangan di-commit.
+flow-*.json
+
+# Pemetaan nomor WhatsApp → sesi Hermes: data operasional, bukan kode.
+sessions.json
+
+__pycache__/
+*.py[cod]

@@ -78,13 +78,18 @@ Catat URL `https://xxx.trycloudflare.com` yang muncul.
 
 ### 4. Canvas flow
 
-Buka `build_flow.py`, isi bagian paling atas:
+Semua nilainya dibaca dari `.env` yang sama, jadi tidak ada rahasia yang
+tertulis di dalam kode:
 
-```python
-BRIDGE_URL      = "https://xxx.trycloudflare.com"
-BRIDGE_TOKEN    = "sama dengan BRIDGE_TOKEN di .env"
-NOMOR_DIIZINKAN = ["+628...", "+628..."]   # tim purchasing
 ```
+BRIDGE_PUBLIC_URL=https://xxx.trycloudflare.com
+BRIDGE_TOKEN=<sama dengan yang dipakai bridge>
+FLOW_NOMOR_DIIZINKAN=+628...,+628...
+```
+
+Canvas hasil generate memuat `BRIDGE_TOKEN` di dalam URL node API Call, jadi
+`flow-*.json` sengaja masuk `.gitignore`. Repo ini publik — bangun ulang di
+mesin tujuan, jangan di-commit.
 
 Lalu:
 
