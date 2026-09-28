@@ -34,6 +34,7 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -42,7 +43,7 @@ import uuid
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 # ── Konfigurasi ──────────────────────────────────────────────────────────────
 
@@ -167,6 +168,43 @@ def push_file(conversation_id: str, file_path: Path, caption: str = "") -> None:
         log.info("terkirim: %s", file_path.name)
 
 
+def download_media(conversation_id: str, message_id: str) -> Path | None:
+    """
+    Ambil berkas yang dikirim pelanggan dari Satuchat, simpan sebagai berkas
+    sementara, kembalikan path-nya.
+
+    Byte-nya tidak pernah lewat node API Call: respons node itu dibatasi 256 KB
+    dan flow tidak boleh menunggu unduhan. Flow hanya menyebut id pesannya,
+    pengambilannya terjadi di sini.
+
+    Gagal mengunduh BUKAN alasan membatalkan giliran — pertanyaan pelanggan tetap
+    diteruskan, agen yang memberi tahu bahwa lampirannya tidak terbaca.
+    """
+    url = f"{SATUCHAT_API_BASE}/bridge/conversations/{conversation_id}/messages/{message_id}/media"
+    req = urllib.request.Request(url, headers={"x-api-key": SATUCHAT_BRIDGE_KEY})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as res:
+            data = res.read()
+            nama = unquote(res.headers.get("X-Filename") or "lampiran")
+            mime = (res.headers.get("Content-Type") or "").split(";")[0].strip()
+    except urllib.error.HTTPError as err:
+        log.warning("unduh lampiran gagal (%s) untuk pesan %s", err.code, message_id)
+        return None
+    except Exception as err:
+        log.warning("unduh lampiran gagal untuk pesan %s: %s", message_id, err)
+        return None
+
+    # Nama berkas dari Telegram sering tanpa ekstensi ("file"), jadi tipe isinya
+    # yang menentukan. Ekstensi yang salah bukan soal rapi-rapian: itu yang
+    # dibaca agen saat memutuskan cara membuka gambarnya.
+    akhiran = Path(nama).suffix or mimetypes.guess_extension(mime or "") or ".jpg"
+    fd, path = tempfile.mkstemp(prefix="prpo-lampiran-", suffix=akhiran)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    log.info("lampiran diunduh: %s (%d byte)", nama, len(data))
+    return Path(path)
+
+
 def _chunk(text: str, size: int) -> list[str]:
     """Potong di batas baris kalau bisa — memotong di tengah kata terlihat rusak."""
     text = text.strip()
@@ -200,7 +238,7 @@ class HermesReply:
     error: str | None = None
 
 
-def run_hermes(session_name: str, message: str) -> HermesReply:
+def run_hermes(session_name: str, message: str, image: Path | None = None) -> HermesReply:
     """
     Satu giliran agen. Teks pengguna masuk lewat stdin (--query-file -), jadi
     tidak pernah ditafsirkan shell: tanda kutip, $(...) dan backtick di pesan
@@ -213,6 +251,9 @@ def run_hermes(session_name: str, message: str) -> HermesReply:
         "--continue", session_name,
         "--create-if-missing",
     ]
+    # Satu gambar per giliran — itu yang didukung `hermes chat --image`.
+    if image is not None:
+        cmd += ["--image", str(image)]
     started = time.monotonic()
     try:
         proc = subprocess.run(
@@ -280,6 +321,8 @@ class Job:
     conversation_id: str
     session_key: str
     text: str
+    media_id: str = ""
+    media_type: str = ""
 
 
 class SessionRouter:
@@ -347,7 +390,23 @@ class SessionRouter:
 
     def _handle(self, job: Job) -> None:
         session_name = self.hermes_session(job.session_key)
-        reply = run_hermes(session_name, job.text)
+
+        gambar = None
+        if job.media_id and job.media_type == "image":
+            gambar = download_media(job.conversation_id, job.media_id)
+        elif job.media_id:
+            # Dokumen, audio, video: belum bisa dilampirkan ke agen. Lebih jujur
+            # memberitahunya daripada diam — agen akan menjawab bahwa berkasnya
+            # tidak terbaca, bukan berpura-pura sudah menerimanya.
+            log.info("lampiran %s dilewati (belum didukung)", job.media_type)
+
+        teks = job.text or ("Pengguna mengirim gambar tanpa keterangan."
+                            if gambar else "Pengguna mengirim lampiran yang belum bisa dibaca.")
+        try:
+            reply = run_hermes(session_name, teks, image=gambar)
+        finally:
+            if gambar is not None:
+                gambar.unlink(missing_ok=True)
 
         if reply.error:
             log.error("hermes error (%s): %s", session_name, reply.error)
@@ -458,9 +517,18 @@ class Handler(BaseHTTPRequestHandler):
 
         if parsed.path == "/wa/message":
             text = str(payload.get("text") or "").strip()
-            if not (session_key and conversation_id and text):
-                return self._reply(400, {"error": "session, conversationId, dan text wajib diisi"})
-            ROUTER.submit(Job(conversation_id=conversation_id, session_key=session_key, text=text))
+            media_id = str(payload.get("mediaId") or "").strip()
+            media_type = str(payload.get("mediaType") or "").strip()
+            # Foto tanpa caption sah: teks boleh kosong ASAL ada lampirannya.
+            if not (session_key and conversation_id and (text or media_id)):
+                return self._reply(400, {"error": "session, conversationId, dan text/mediaId wajib diisi"})
+            ROUTER.submit(Job(
+                conversation_id=conversation_id,
+                session_key=session_key,
+                text=text,
+                media_id=media_id,
+                media_type=media_type,
+            ))
             # 202 sebelum agen jalan: inilah yang membuat node API Call tidak
             # pernah menyentuh batas 10 detiknya.
             return self._reply(202, {"status": "queued"})

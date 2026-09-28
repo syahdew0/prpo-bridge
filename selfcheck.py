@@ -55,6 +55,17 @@ class FakeSatuchat(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:  # noqa: N802
+        if "/media" in self.path:
+            if self.headers.get("x-api-key") != API_KEY:
+                return self._json(401, {"success": False})
+            body = GAMBAR_BYTES
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Filename", "file")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         self._json(200, {"success": True, "data": {"ok": True}})
 
     def do_POST(self) -> None:  # noqa: N802
@@ -79,15 +90,26 @@ def start_fake_satuchat() -> str:
 PO_FILE = WORK / "PO_FRM-PO-IT-2026-IX-1.pdf"
 PO_FILE.write_bytes(b"%PDF-1.4 dummy")
 
+GAMBAR_BYTES = b"\x89PNG\r\n\x1a\n monitor xiaomi dummy"
+ARGS_FILE = WORK / "hermes-args.txt"      # argumen terakhir yang diterima hermes
+PROMPT_FILE = WORK / "hermes-prompt.txt"  # teks yang masuk lewat stdin
+IMG_SALINAN = WORK / "gambar-yang-dilampirkan.bin"
+
 FAKE_HERMES = WORK / "hermes-tiruan"
-FAKE_HERMES.write_text(
-    "#!/bin/sh\n"
-    "cat > /dev/null\n"                       # pesan pengguna lewat stdin
-    "echo 'Warning: Unknown toolsets: psg_po_pr'\n"
-    "echo 'PO berhasil dibuat.'\n"
-    f"echo 'MEDIA:{PO_FILE}'\n"
-    "echo 'session_id: x' 1>&2\n"
-)
+FAKE_HERMES.write_text(f"""#!/usr/bin/env python3
+import sys, pathlib
+pathlib.Path({str(PROMPT_FILE)!r}).write_text(sys.stdin.read())
+pathlib.Path({str(ARGS_FILE)!r}).write_text("\\n".join(sys.argv[1:]))
+if "--image" in sys.argv:
+    asal = pathlib.Path(sys.argv[sys.argv.index("--image") + 1])
+    # Disalin SAAT dipanggil: membuktikan berkasnya benar-benar ada saat agen
+    # berjalan, bukan sekadar path yang disebut lalu dihapus duluan.
+    pathlib.Path({str(IMG_SALINAN)!r}).write_bytes(asal.read_bytes())
+print("Warning: Unknown toolsets: psg_po_pr")
+print("PO berhasil dibuat.")
+print("MEDIA:{PO_FILE}")
+print("session_id: x", file=sys.stderr)
+""")
 FAKE_HERMES.chmod(0o755)
 
 BASE = start_fake_satuchat()
@@ -205,6 +227,50 @@ check("reset menghasilkan sesi baru", after_reset != first, f"{first} -> {after_
 check("sesi tersimpan ke disk", json.loads((WORK / "sessions.json").read_text())["628123"] == after_reset)
 check("karakter aneh dibuang dari nama sesi",
       bridge.ROUTER.hermes_session("62812/../x") == "wa-62812x", bridge.ROUTER.hermes_session("62812/../x"))
+
+# ── 6. Lampiran pelanggan ────────────────────────────────────────────────────
+
+print("\nlampiran")
+
+status, _ = call("/wa/message", {"session": "wa-628", "conversationId": "c1"})
+check("tanpa teks DAN tanpa lampiran tetap ditolak", status == 400, str(status))
+
+RECEIVED["text"].clear()
+ARGS_FILE.unlink(missing_ok=True)
+IMG_SALINAN.unlink(missing_ok=True)
+
+status, _ = call("/wa/message", {
+    "session": "wa-628", "conversationId": "c9",
+    "text": "", "mediaId": "m-123", "mediaType": "image",
+})
+check("foto tanpa caption diterima", status == 202, str(status))
+
+deadline = time.time() + 15
+while time.time() < deadline and not ARGS_FILE.exists():
+    time.sleep(0.1)
+
+args = ARGS_FILE.read_text().splitlines() if ARGS_FILE.exists() else []
+check("hermes dipanggil dengan --image", "--image" in args, str(args))
+check("berkasnya ada saat agen berjalan dan isinya utuh",
+      IMG_SALINAN.exists() and IMG_SALINAN.read_bytes() == GAMBAR_BYTES)
+if "--image" in args:
+    jalur = args[args.index("--image") + 1]
+    check("ekstensi diturunkan dari Content-Type saat nama tanpa ekstensi",
+          jalur.endswith(".png"), jalur)
+    check("berkas sementara dibersihkan setelah giliran selesai",
+          not Path(jalur).exists(), jalur)
+prompt = PROMPT_FILE.read_text() if PROMPT_FILE.exists() else ""
+check("teks kosong diganti keterangan, bukan dikirim kosong", prompt.strip() != "", repr(prompt))
+
+# Lampiran jenis lain tidak boleh ikut --image
+ARGS_FILE.unlink(missing_ok=True)
+call("/wa/message", {"session": "wa-628", "conversationId": "c9",
+                     "text": "ini dokumennya", "mediaId": "m-9", "mediaType": "document"})
+deadline = time.time() + 15
+while time.time() < deadline and not ARGS_FILE.exists():
+    time.sleep(0.1)
+check("dokumen tidak dipaksakan sebagai gambar",
+      "--image" not in (ARGS_FILE.read_text().splitlines() if ARGS_FILE.exists() else []))
 
 print()
 if FAILURES:

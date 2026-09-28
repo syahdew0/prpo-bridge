@@ -107,6 +107,39 @@ hasilnya sama.
 Terakhir tekan **Publish** di Flow Builder: percakapan sungguhan memakai versi
 yang di-publish, bukan draft.
 
+## Menjalankan sebagai layanan
+
+`./run.sh` mati begitu terminalnya ditutup. Untuk pemakaian sungguhan:
+
+```bash
+./install-service.sh              # pasang + jalankan
+./install-service.sh --dry-run    # lihat plist-nya saja
+./install-service.sh --uninstall  # lepas lagi
+```
+
+Layanannya hidup saat login dan dihidupkan ulang kalau proses mati. Log:
+`~/.prpo-bridge/logs/bridge.log` dan `bridge.error.log`.
+
+Tiga hal yang membuat plist-nya seperti itu:
+
+- **Rahasia tidak masuk plist.** Layanan menjalankan `run.sh`, yang membaca
+  `.env` seperti biasa — berkas di `~/Library/LaunchAgents` bisa dibaca proses
+  lain.
+- **PATH ditulis eksplisit.** launchd tidak mewarisi PATH shell, dan `hermes`
+  ada di `~/.local/bin`. Tanpa itu bridge jalan normal tapi setiap giliran gagal
+  dengan "perintah 'hermes' tidak ditemukan".
+- **Python bawaan macOS cukup.** Selfcheck lolos penuh di Python 3.9.6
+  `/usr/bin/python3`, jadi layanannya tidak bergantung pada Homebrew.
+
+Mengubah `.env` tidak otomatis terbaca — layanannya perlu dijalankan ulang:
+
+```bash
+launchctl kickstart -k gui/$(id -u)/id.psggroup.prpo-bridge
+```
+
+Kalau folder ini ada di disk eksternal, layanan akan gagal sampai disknya
+ter-mount; launchd mencoba lagi dengan jeda.
+
 ## Cara kerja sesi
 
 Nama sesi Hermes = `wa-<nomor>`. Satu nomor = satu riwayat, jadi dua staff yang
@@ -125,16 +158,40 @@ Dipanggil Satuchat (token di URL karena node API Call tidak bisa kirim header):
 ```
 POST /wa/start?token=…    {"session":"628…"}                        → 200
 POST /wa/message?token=…  {"session":"628…","conversationId":"…",
-                           "text":"…"}                              → 202
+                           "text":"…",
+                           "mediaId":"…","mediaType":"image"}        → 202
 GET  /health?token=…                                                → 200
 ```
+
+`mediaId` dan `mediaType` opsional, diisi flow dari `{{message_media_id}}` dan
+`{{message_media_type}}` saat pelanggan mengirim gambar. Teks boleh kosong asal
+lampirannya ada — foto tanpa caption itu wajar.
 
 Dipanggil bridge ke Satuchat (kunci di header):
 
 ```
 POST /api/v1/bridge/messages   x-api-key   {"conversationId":"…","text":"…"}
 POST /api/v1/bridge/media      x-api-key   multipart: conversationId, caption, file
+GET  /api/v1/bridge/conversations/:convId/messages/:msgId/media   x-api-key
 ```
+
+## Lampiran dari pelanggan
+
+Gambar tidak pernah ikut di body node API Call — respons node itu dibatasi 256 KB
+dan flow tidak boleh menunggu unduhan. Flow hanya menyebut **id pesannya**;
+bridge yang mengunduh byte-nya lewat endpoint terakhir di atas, menyimpannya
+sebagai berkas sementara, lalu menjalankan `hermes chat --image <path>` dan
+menghapusnya lagi setelah giliran selesai.
+
+Dua syarat di sisi canvas:
+
+1. body node API Call memuat `mediaId` dan `mediaType`;
+2. node titik parkir dicentang **"Terima gambar / berkas sebagai jawaban"** —
+   tanpa itu foto tanpa caption dibalas *"Mohon jawab dengan pesan teks ya"* dan
+   tidak pernah sampai ke node API Call.
+
+Dokumen, audio, dan video belum bisa dilampirkan ke agen: `hermes chat --image`
+hanya menerima gambar. Bridge melewatinya dan memberi tahu agen apa adanya.
 
 Bridge berhenti mengirim kalau Satuchat menjawab `409`: percakapan ditutup, atau
 sudah diambil agent manusia. Antrean yang tersisa untuk sesi itu dibuang.

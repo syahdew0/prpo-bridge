@@ -139,7 +139,10 @@ edge("prpo_start", "prpo_intro", "true")
 # asisten PR/PO lewat bridge, bukan flow. Node ini hanya menahan percakapan di
 # sini sampai pelanggan menulis lagi.
 node("prpo_tunggu", "ask_question", "Tunggu pesan", 1460, 330,
-     question="", options=[], saveToVar="", maxRetry=99)
+     question="", options=[], saveToVar="", maxRetry=99,
+     # Foto tanpa caption adalah jawaban yang sah di mode ini — tanpa ini
+     # pelanggan dibalas "Mohon jawab dengan pesan teks ya".
+     acceptNonText=True)
 edge("prpo_intro", "prpo_tunggu")
 
 node(
@@ -158,6 +161,9 @@ node(
         "session": "{{contact_phone}}",
         "conversationId": "{{conversation_id}}",
         "text": "{{message_text}}",
+        # Bukan berkasnya, hanya id pesannya: bridge yang mengunduh sendiri.
+        "mediaId": "{{message_media_id}}",
+        "mediaType": "{{message_media_type}}",
     }),
     responsePath="",
     responseVariable="prpo_kirim",
