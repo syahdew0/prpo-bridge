@@ -79,6 +79,11 @@ MAX_TEXT_CHARS = 4000
 logging.basicConfig(
     level=os.environ.get("BRIDGE_LOG_LEVEL", "INFO"),
     format="%(asctime)s %(levelname)-7s %(message)s",
+    # stdout, bukan stderr bawaan logging. Sebagai layanan launchd, stdout dan
+    # stderr jatuh ke dua berkas berbeda — dan tanpa ini SELURUH log operasional
+    # mendarat di bridge.error.log sementara bridge.log tinggal kosong. Orang
+    # yang menelusuri masalah akan membuka berkas yang salah lebih dulu.
+    stream=sys.stdout,
 )
 log = logging.getLogger("prpo-bridge")
 
