@@ -85,6 +85,21 @@ log = logging.getLogger("prpo-bridge")
 
 # ── Klien Satuchat ───────────────────────────────────────────────────────────
 
+# User-Agent WAJIB diisi sendiri. Pustaka standar Python memakai
+# "Python-urllib/3.x", dan Cloudflare — yang berdiri di depan API Satuchat —
+# memblokirnya dengan 403 "error code: 1010" sebelum permintaan sampai ke
+# backend. Gejalanya menyesatkan: kunci API benar, alamat benar, curl dari
+# terminal yang sama berhasil, tapi bridge selalu ditolak.
+USER_AGENT = "prpo-bridge/1.0"
+
+
+def _headers(extra: dict[str, str] | None = None) -> dict[str, str]:
+    h = {"User-Agent": USER_AGENT, "x-api-key": SATUCHAT_BRIDGE_KEY}
+    if extra:
+        h.update(extra)
+    return h
+
+
 
 def _post_json(path: str, payload: dict) -> tuple[int, dict]:
     body = json.dumps(payload).encode()
@@ -92,7 +107,7 @@ def _post_json(path: str, payload: dict) -> tuple[int, dict]:
         f"{SATUCHAT_API_BASE}{path}",
         data=body,
         method="POST",
-        headers={"Content-Type": "application/json", "x-api-key": SATUCHAT_BRIDGE_KEY},
+        headers=_headers({"Content-Type": "application/json"}),
     )
     return _send(req)
 
@@ -118,10 +133,7 @@ def _post_file(path: str, fields: dict[str, str], file_path: Path) -> tuple[int,
         f"{SATUCHAT_API_BASE}{path}",
         data=b"".join(parts),
         method="POST",
-        headers={
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-            "x-api-key": SATUCHAT_BRIDGE_KEY,
-        },
+        headers=_headers({"Content-Type": f"multipart/form-data; boundary={boundary}"}),
     )
     return _send(req)
 
@@ -181,7 +193,7 @@ def download_media(conversation_id: str, message_id: str) -> Path | None:
     diteruskan, agen yang memberi tahu bahwa lampirannya tidak terbaca.
     """
     url = f"{SATUCHAT_API_BASE}/bridge/conversations/{conversation_id}/messages/{message_id}/media"
-    req = urllib.request.Request(url, headers={"x-api-key": SATUCHAT_BRIDGE_KEY})
+    req = urllib.request.Request(url, headers=_headers())
     try:
         with urllib.request.urlopen(req, timeout=120) as res:
             data = res.read()
@@ -540,7 +552,7 @@ def main() -> None:
     status, body = _send(
         urllib.request.Request(
             f"{SATUCHAT_API_BASE}/bridge/health",
-            headers={"x-api-key": SATUCHAT_BRIDGE_KEY},
+            headers=_headers(),
         )
     )
     if status != 200:

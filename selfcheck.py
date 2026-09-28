@@ -35,7 +35,7 @@ def check(name: str, condition: bool, detail: str = "") -> None:
 
 # ── Satuchat tiruan ──────────────────────────────────────────────────────────
 
-RECEIVED: dict[str, list] = {"text": [], "media": []}
+RECEIVED: dict[str, list] = {"text": [], "media": [], "ua": []}
 API_KEY = "kunci-satuchat-tiruan-yang-cukup-panjang"
 
 
@@ -55,6 +55,7 @@ class FakeSatuchat(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:  # noqa: N802
+        RECEIVED["ua"].append(self.headers.get("User-Agent") or "")
         if "/media" in self.path:
             if self.headers.get("x-api-key") != API_KEY:
                 return self._json(401, {"success": False})
@@ -69,6 +70,7 @@ class FakeSatuchat(BaseHTTPRequestHandler):
         self._json(200, {"success": True, "data": {"ok": True}})
 
     def do_POST(self) -> None:  # noqa: N802
+        RECEIVED["ua"].append(self.headers.get("User-Agent") or "")
         raw = self._read()
         if self.headers.get("x-api-key") != API_KEY:
             return self._json(401, {"success": False, "message": "kunci salah"})
@@ -271,6 +273,18 @@ while time.time() < deadline and not ARGS_FILE.exists():
     time.sleep(0.1)
 check("dokumen tidak dipaksakan sebagai gambar",
       "--image" not in (ARGS_FILE.read_text().splitlines() if ARGS_FILE.exists() else []))
+
+# ── 7. User-Agent ────────────────────────────────────────────────────────────
+
+print("\nuser-agent")
+
+check("ada permintaan yang tercatat", len(RECEIVED["ua"]) > 0, str(len(RECEIVED["ua"])))
+check("tidak ada yang memakai User-Agent bawaan Python",
+      not any("Python-urllib" in ua for ua in RECEIVED["ua"]),
+      str(sorted(set(RECEIVED["ua"]))))
+check("semuanya memakai User-Agent bridge",
+      all(ua.startswith("prpo-bridge/") for ua in RECEIVED["ua"]),
+      str(sorted(set(RECEIVED["ua"]))))
 
 print()
 if FAILURES:
