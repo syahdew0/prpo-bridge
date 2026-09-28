@@ -121,6 +121,7 @@ os.environ.update({
     "SATUCHAT_BRIDGE_KEY": API_KEY,
     "HERMES_BIN": str(FAKE_HERMES),
     "BRIDGE_STATE_FILE": str(WORK / "sessions.json"),
+    "BRIDGE_MEDIA_DIR": str(WORK / "media"),
     "BRIDGE_PORT": "0",
     "BRIDGE_LOG_LEVEL": "CRITICAL",
 })
@@ -259,8 +260,13 @@ if "--image" in args:
     jalur = args[args.index("--image") + 1]
     check("ekstensi diturunkan dari Content-Type saat nama tanpa ekstensi",
           jalur.endswith(".png"), jalur)
-    check("berkas sementara dibersihkan setelah giliran selesai",
-          not Path(jalur).exists(), jalur)
+    # Berkasnya HARUS bertahan: agen memakainya di giliran BERIKUTNYA, saat
+    # pelanggan menjawab "ya buatkan" dan generate_pr baru membuka gambarnya.
+    # Versi sebelumnya menghapusnya di sini, dan dokumen terbit tanpa lampiran.
+    check("berkas lampiran BERTAHAN setelah giliran selesai",
+          Path(jalur).exists(), jalur)
+    check("disimpan per sesi, bukan di folder sementara sistem",
+          str(WORK / "media") in jalur, jalur)
 prompt = PROMPT_FILE.read_text() if PROMPT_FILE.exists() else ""
 check("teks kosong diganti keterangan, bukan dikirim kosong", prompt.strip() != "", repr(prompt))
 
@@ -285,6 +291,10 @@ check("tidak ada yang memakai User-Agent bawaan Python",
 check("semuanya memakai User-Agent bridge",
       all(ua.startswith("prpo-bridge/") for ua in RECEIVED["ua"]),
       str(sorted(set(RECEIVED["ua"]))))
+
+check("lampiran dibuang saat sesi di-reset",
+      (lambda p=Path(jalur): (call("/wa/start", {"session": "wa-628"}), not p.exists())[1])()
+      if "--image" in args else True)
 
 print()
 if FAILURES:

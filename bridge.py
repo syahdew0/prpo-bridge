@@ -31,10 +31,10 @@ import mimetypes
 import os
 import queue
 import re
+import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import urllib.error
@@ -71,6 +71,13 @@ HERMES_TIMEOUT = int(_env("HERMES_TIMEOUT", "600"))
 SESSION_PREFIX = _env("HERMES_SESSION_PREFIX", "wa-")
 
 STATE_FILE = Path(_env("BRIDGE_STATE_FILE", str(Path.home() / ".prpo-bridge" / "sessions.json")))
+# Lampiran pelanggan disimpan PER SESI, bukan per giliran. Agen memakai berkasnya
+# di giliran BERIKUTNYA — pelanggan mengirim foto dulu, lalu beberapa menit
+# kemudian menjawab "ya buatkan", dan baru di situ generate_pr membuka gambarnya.
+# Menghapusnya begitu satu giliran selesai membuat dokumen terbit tanpa lampiran,
+# dengan agen berkata "file gambar sementara sudah tidak tersedia".
+MEDIA_DIR = Path(_env("BRIDGE_MEDIA_DIR", str(Path.home() / ".prpo-bridge" / "media")))
+MEDIA_TTL_HOURS = int(_env("BRIDGE_MEDIA_TTL_HOURS", "48"))
 IDLE_WORKER_SECONDS = int(_env("BRIDGE_IDLE_WORKER_SECONDS", "900"))
 
 # Batas teks satu pesan mengikuti skema validasi di bridge.routes.js (4096).
@@ -185,7 +192,34 @@ def push_file(conversation_id: str, file_path: Path, caption: str = "") -> None:
         log.info("terkirim: %s", file_path.name)
 
 
-def download_media(conversation_id: str, message_id: str) -> Path | None:
+def media_dir_sesi(session_name: str) -> Path:
+    d = MEDIA_DIR / _slug(session_name)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def buang_media_sesi(session_name: str) -> None:
+    """Dipanggil saat sesi di-reset — riwayat baru, lampiran lama tidak relevan."""
+    shutil.rmtree(MEDIA_DIR / _slug(session_name), ignore_errors=True)
+
+
+def buang_media_kedaluwarsa() -> None:
+    """
+    Sapu berkala. Tanpa ini folder media tumbuh selamanya: sesi yang ditinggalkan
+    pelanggan tidak pernah di-reset, jadi tidak ada yang membersihkannya.
+    """
+    batas = time.time() - MEDIA_TTL_HOURS * 3600
+    if not MEDIA_DIR.exists():
+        return
+    for folder in MEDIA_DIR.iterdir():
+        try:
+            if folder.is_dir() and folder.stat().st_mtime < batas:
+                shutil.rmtree(folder, ignore_errors=True)
+        except OSError:
+            continue
+
+
+def download_media(conversation_id: str, message_id: str, session_name: str) -> Path | None:
     """
     Ambil berkas yang dikirim pelanggan dari Satuchat, simpan sebagai berkas
     sementara, kembalikan path-nya.
@@ -215,11 +249,12 @@ def download_media(conversation_id: str, message_id: str) -> Path | None:
     # yang menentukan. Ekstensi yang salah bukan soal rapi-rapian: itu yang
     # dibaca agen saat memutuskan cara membuka gambarnya.
     akhiran = Path(nama).suffix or mimetypes.guess_extension(mime or "") or ".jpg"
-    fd, path = tempfile.mkstemp(prefix="prpo-lampiran-", suffix=akhiran)
-    with os.fdopen(fd, "wb") as f:
-        f.write(data)
-    log.info("lampiran diunduh: %s (%d byte)", nama, len(data))
-    return Path(path)
+    # Dinamai dari id pesannya, bukan acak: foto yang sama tidak pernah diunduh
+    # dua kali, dan path-nya bisa disebut ulang agen di giliran berikutnya.
+    path = media_dir_sesi(session_name) / f"{_slug(message_id)}{akhiran}"
+    path.write_bytes(data)
+    log.info("lampiran diunduh: %s (%d byte) → %s", nama, len(data), path.name)
+    return path
 
 
 def _chunk(text: str, size: int) -> list[str]:
@@ -367,8 +402,12 @@ class SessionRouter:
         """Mulai riwayat baru — dipanggil saat pelanggan masuk ke mode PR/PO."""
         with self._lock:
             name = f"{SESSION_PREFIX}{_slug(session_key)}-{int(time.time())}"
+            lama = self._names.get(session_key)
             self._names[session_key] = name
             _save_state(self._names)
+        if lama:
+            buang_media_sesi(lama)
+        buang_media_kedaluwarsa()
         log.info("sesi %s direset ke %s", session_key, name)
         return name
 
@@ -410,7 +449,7 @@ class SessionRouter:
 
         gambar = None
         if job.media_id and job.media_type == "image":
-            gambar = download_media(job.conversation_id, job.media_id)
+            gambar = download_media(job.conversation_id, job.media_id, session_name)
         elif job.media_id:
             # Dokumen, audio, video: belum bisa dilampirkan ke agen. Lebih jujur
             # memberitahunya daripada diam — agen akan menjawab bahwa berkasnya
@@ -419,11 +458,9 @@ class SessionRouter:
 
         teks = job.text or ("Pengguna mengirim gambar tanpa keterangan."
                             if gambar else "Pengguna mengirim lampiran yang belum bisa dibaca.")
-        try:
-            reply = run_hermes(session_name, teks, image=gambar)
-        finally:
-            if gambar is not None:
-                gambar.unlink(missing_ok=True)
+        # Berkasnya SENGAJA tidak dihapus di sini — lihat catatan di MEDIA_DIR.
+        # Pembersihannya saat sesi di-reset, dan sapuan usia saat start/reset.
+        reply = run_hermes(session_name, teks, image=gambar)
 
         if reply.error:
             log.error("hermes error (%s): %s", session_name, reply.error)
@@ -566,6 +603,8 @@ def main() -> None:
                     status, body.get("message"))
     else:
         log.info("Satuchat bridge API terjangkau di %s", SATUCHAT_API_BASE)
+
+    buang_media_kedaluwarsa()
 
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     for sig in (signal.SIGINT, signal.SIGTERM):
