@@ -111,11 +111,30 @@ yang di-publish, bukan draft.
 
 `./run.sh` mati begitu terminalnya ditutup. Untuk pemakaian sungguhan:
 
+macOS (launchd):
+
 ```bash
 ./install-service.sh              # pasang + jalankan
 ./install-service.sh --dry-run    # lihat plist-nya saja
 ./install-service.sh --uninstall  # lepas lagi
 ```
+
+Linux (systemd):
+
+```bash
+sudo ./install-service-linux.sh --user agent   # user pemilik profil Hermes
+./install-service-linux.sh --dry-run           # lihat unit-nya saja
+sudo ./install-service-linux.sh --uninstall
+journalctl -u prpo-bridge -f                   # log
+```
+
+Layanannya **wajib** berjalan sebagai user yang memiliki profil Hermes-nya.
+Riwayat sesi, kredensial model, dan daftar profil semuanya per-user; dijalankan
+sebagai root, bridge akan memanggil Hermes milik root yang kosong.
+
+Memilih profil tertentu (mis. `psg-tools`) dilakukan lewat wrapper yang dibuat
+`hermes profile alias <nama>`, lalu `HERMES_BIN=psg-tools` di `.env`. Tidak ada
+opsi `--profile` di `hermes chat`.
 
 Layanannya hidup saat login dan dihidupkan ulang kalau proses mati. Log:
 `~/.prpo-bridge/logs/bridge.log` dan `bridge.error.log`.
